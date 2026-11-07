@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   check:
@@ -70,67 +69,44 @@ jobs:
 
       - name: Report upstream changes
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
           OURS: ${{ steps.ours.outputs.version }}
           THEIRS: ${{ steps.theirs.outputs.version }}
           COMMITS: ${{ steps.theirs.outputs.commits }}
         shell: bash
         run: |
-          # Ensure the label exists in OUR repository.
-          gh label create upstream \
-            --repo "$GH_REPO" \
-            --description "Upstream sync tracking" \
-            --color ededed || true
+          {
+            echo "# Upstream ox_inventory check"
+            echo ""
+            echo "| Version | Value |"
+            echo "|---|---|"
+            echo "| Our fork | $OURS |"
+            echo "| Upstream | $THEIRS |"
+            echo ""
 
-          if [ "$OURS" = "$THEIRS" ] && [ -z "$COMMITS" ]; then
-            echo "Up to date with upstream $THEIRS. Nothing to report."
-            exit 0
-          fi
+            if [ "$OURS" = "$THEIRS" ] && [ -z "$COMMITS" ]; then
+              echo "## Up to date"
+              echo "No upstream changes detected."
+            else
+              echo "## Upstream changes detected"
+              echo ""
+              echo "Review and manually port relevant changes into this fork."
+              echo ""
+              echo "### Recent upstream commits"
+              echo ""
+              echo "${COMMITS:-No commit details available.}"
+              echo ""
+              echo "### Upstream links"
+              echo ""
+              echo "- [Upstream repository](https://github.com/overextended/ox_inventory)"
+              echo "- [Upstream commit history](https://github.com/overextended/ox_inventory/commits/main/)"
+              echo "- [Version comparison](https://github.com/overextended/ox_inventory/compare/v${OURS}...main)"
+              echo ""
+              echo "> This workflow reports upstream changes only. It does not automatically merge or install upstream changes. Review security fixes and compatibility before porting them."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          TITLE="Upstream ox_inventory has changes (ours $OURS, theirs $THEIRS)"
-
-          BODY=$(cat <<EOF
-          This fork has upstream changes that may need to be reviewed and manually ported.
-
-          **Our version:** $OURS
-
-          **Upstream version:** $THEIRS
-
-          **Recent upstream commits since the version was introduced:**
-
-          ${COMMITS:-No commit details available.}
-
-          **Upstream repository:** https://github.com/overextended/ox_inventory
-
-          **Upstream commit history:** https://github.com/overextended/ox_inventory/commits/main/
-
-          ---
-
-          This workflow reports upstream changes only. It does not automatically merge or install upstream changes into this fork. Review security fixes and compatibility before porting them.
-          EOF
-          )
-
-          EXISTING=$(gh issue list \
-            --repo "$GH_REPO" \
-            --label upstream \
-            --state open \
-            --json number \
-            --jq '.[0].number')
-
-          if [ -n "$EXISTING" ]; then
-            echo "Updating existing upstream issue #$EXISTING"
-
-            gh issue edit "$EXISTING" \
-              --repo "$GH_REPO" \
-              --title "$TITLE" \
-              --body "$BODY"
+          if [ "$OURS" != "$THEIRS" ] || [ -n "$COMMITS" ]; then
+            echo "::warning::Upstream changes detected. Review the Actions run summary."
           else
-            echo "Creating new upstream tracking issue"
-
-            gh issue create \
-              --repo "$GH_REPO" \
-              --title "$TITLE" \
-              --body "$BODY" \
-              --label upstream
+            echo "Up to date with upstream $THEIRS."
           fi
