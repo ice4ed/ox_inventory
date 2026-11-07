@@ -1,3 +1,4 @@
+
 name: Check upstream
 
 on:
@@ -12,56 +13,124 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout fork
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Read our version
         id: ours
+        shell: bash
         run: |
           OURS=$(grep -oP "^version\s+'\K[^']+" fxmanifest.lua)
+
+          if [ -z "$OURS" ]; then
+            echo "Could not read version from our fxmanifest.lua"
+            exit 1
+          fi
+
           echo "version=$OURS" >> "$GITHUB_OUTPUT"
-          echo "This fork is on $OURS"
+          echo "Our version: $OURS"
 
       - name: Read upstream version and commits
         id: theirs
+        shell: bash
         run: |
-          git remote add upstream https://github.com/CommunityOx/ox_inventory.git || true
+          git remote add upstream https://github.com/overextended/ox_inventory.git
           git fetch --quiet upstream main
 
           THEIRS=$(git show upstream/main:fxmanifest.lua | grep -oP "^version\s+'\K[^']+")
+
+          if [ -z "$THEIRS" ]; then
+            echo "Could not read version from upstream fxmanifest.lua"
+            exit 1
+          fi
+
           echo "version=$THEIRS" >> "$GITHUB_OUTPUT"
 
+          # Find the upstream commit where this version was introduced.
           BUMP=$(git log upstream/main --format='%H' -S"$THEIRS" -- fxmanifest.lua | head -1)
+
+          if [ -n "$BUMP" ]; then
+            COMMITS=$(git log --no-merges -n 30 --format='- %h %s' "$BUMP..upstream/main")
+          else
+            echo "Could not identify version introduction commit; showing latest upstream commits."
+            COMMITS=$(git log --no-merges -n 30 --format='- %h %s' upstream/main)
+          fi
+
           {
             echo 'commits<<EOF'
-            git log --format='- %h %s' "$BUMP..upstream/main"
+            echo "$COMMITS"
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-          echo "Upstream is on $THEIRS"
+          echo "Upstream version: $THEIRS"
 
-      - name: Report
+      - name: Report upstream changes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           OURS: ${{ steps.ours.outputs.version }}
           THEIRS: ${{ steps.theirs.outputs.version }}
           COMMITS: ${{ steps.theirs.outputs.commits }}
+        shell: bash
         run: |
+          # Ensure the label exists in OUR repository.
+          gh label create upstream \
+            --repo "$GH_REPO" \
+            --description "Upstream sync tracking" \
+            --color ededed || true
+
           if [ "$OURS" = "$THEIRS" ] && [ -z "$COMMITS" ]; then
             echo "Up to date with upstream $THEIRS. Nothing to report."
             exit 0
           fi
 
           TITLE="Upstream ox_inventory has changes (ours $OURS, theirs $THEIRS)"
-          BODY=$(printf 'This fork does not share git history with upstream, so these cannot be merged. Port them by hand.\n\n**Our version:** %s\n**Upstream version:** %s\n\n**Unreleased upstream commits:**\n%s\n\nCompare: https://github.com/CommunityOx/ox_inventory/compare/v%s...main\n' "$OURS" "$THEIRS" "${COMMITS:-none}" "$THEIRS")
 
-          EXISTING=$(gh issue list --label upstream --state open --json number --jq '.[0].number')
+          BODY=$(cat <<EOF
+          This fork has upstream changes that may need to be reviewed and manually ported.
+
+          **Our version:** $OURS
+
+          **Upstream version:** $THEIRS
+
+          **Recent upstream commits since the version was introduced:**
+
+          ${COMMITS:-No commit details available.}
+
+          **Upstream repository:** https://github.com/overextended/ox_inventory
+
+          **Upstream commit history:** https://github.com/overextended/ox_inventory/commits/main/
+
+          ---
+
+          This workflow reports upstream changes only. It does not automatically merge or install upstream changes into this fork. Review security fixes and compatibility before porting them.
+          EOF
+          )
+
+          EXISTING=$(gh issue list \
+            --repo "$GH_REPO" \
+            --label upstream \
+            --state open \
+            --json number \
+            --jq '.[0].number')
 
           if [ -n "$EXISTING" ]; then
-            gh issue edit "$EXISTING" --title "$TITLE" --body "$BODY"
+            echo "Updating existing upstream issue #$EXISTING"
+
+            gh issue edit "$EXISTING" \
+              --repo "$GH_REPO" \
+              --title "$TITLE" \
+              --body "$BODY"
           else
-            gh label create upstream --description "Upstream sync" --color ededed || true
-            gh issue create --title "$TITLE" --body "$BODY" --label upstream
+            echo "Creating new upstream tracking issue"
+
+            gh issue create \
+              --repo "$GH_REPO" \
+              --title "$TITLE" \
+              --body "$BODY" \
+              --label upstream
           fi
